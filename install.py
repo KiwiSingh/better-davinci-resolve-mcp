@@ -15,13 +15,16 @@ Usage:
 
 import argparse
 import json
+import math
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
 import textwrap
 import time
+from urllib.parse import unquote, urlparse
 from pathlib import Path
 
 from src.utils.update_check import (
@@ -35,7 +38,7 @@ from src.utils.update_check import (
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 
-VERSION = "2.63.2"
+VERSION = "2.66.0"
 # Only hard floor: mcp[cli] requires Python 3.10+. There is no upper bound —
 # Resolve's scripting bridge loads into newer interpreters on recent builds
 # (Python 3.14 verified against Resolve Studio 20.3.2). Older Resolve builds
@@ -192,11 +195,9 @@ RESOLVE_PATHS = {
         ],
         "lib": [
             "/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so",
-            "/Volumes/Zweidrive/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so",
         ],
         "app": [
             "/Applications/DaVinci Resolve/DaVinci Resolve.app",
-            "/Volumes/Zweidrive/Applications/DaVinci Resolve/DaVinci Resolve.app",
         ],
     },
     "Windows": {
@@ -227,11 +228,89 @@ RESOLVE_PATHS = {
     },
 }
 
+DEFAULT_MAC_RESOLVE_APP = Path("/Applications/DaVinci Resolve/DaVinci Resolve.app")
+_PATH_QUOTE_PAIRS = {
+    '"': '"',
+    "'": "'",
+    "\u201c": "\u201d",
+    "\u2018": "\u2019",
+}
 
-def find_resolve_paths():
+
+def normalize_path_input(value):
+    """Normalize a pasted pathname, including Finder/shell wrapping quotes."""
+    if value is None:
+        return None
+
+    text = os.fspath(value).strip()
+    while len(text) >= 2 and _PATH_QUOTE_PAIRS.get(text[0]) == text[-1]:
+        text = text[1:-1].strip()
+
+    # Finder normally copies a plain POSIX path, while terminals and other
+    # launchers may preserve shell quotes or backslash-escaped spaces.
+    try:
+        parsed = shlex.split(text)
+        if len(parsed) == 1:
+            text = parsed[0]
+    except ValueError:
+        # Keep the literal text for paths containing an unmatched quote.
+        pass
+
+    if text.startswith("file://"):
+        parsed_url = urlparse(text)
+        text = unquote(parsed_url.path)
+
+    return Path(os.path.expandvars(text)).expanduser()
+
+
+def resolve_macos_app_path(value):
+    """Resolve an app bundle from a bundle, executable, or containing folder."""
+    path = normalize_path_input(value)
+    if path is None:
+        return DEFAULT_MAC_RESOLVE_APP
+
+    if path.name == "DaVinci Resolve" and (path / "DaVinci Resolve.app").is_dir():
+        path = path / "DaVinci Resolve.app"
+    elif path.is_dir() and (path / "DaVinci Resolve.app").is_dir():
+        path = path / "DaVinci Resolve.app"
+
+    for candidate in (path, *path.parents):
+        if candidate.name.lower().endswith(".app"):
+            return candidate
+    return path
+
+
+def prompt_for_macos_resolve_app(input_func=input):
+    """Prompt for Resolve's app bundle, defaulting to the internal install."""
+    default = DEFAULT_MAC_RESOLVE_APP
+    while True:
+        try:
+            raw = input_func(
+                f"  DaVinci Resolve application path [{default}]: "
+            ).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return default
+
+        candidate = resolve_macos_app_path(raw or default)
+        if candidate.is_dir():
+            return candidate
+
+        print(f"  {yellow('Not found:')} {candidate}")
+        print(
+            f"  {dim('Paste the full path to DaVinci Resolve.app, or press Ctrl-C to use the default.')}"
+        )
+
+
+def find_resolve_paths(resolve_app_path=None):
     """Auto-detect DaVinci Resolve installation paths."""
     candidates = RESOLVE_PATHS.get(SYSTEM, RESOLVE_PATHS["Linux"])
     username = os.environ.get("USER", os.environ.get("USERNAME", ""))
+    app_candidates = list(candidates.get("app", []))
+
+    if is_mac() and resolve_app_path is not None:
+        selected_app = resolve_macos_app_path(resolve_app_path)
+        app_candidates.insert(0, str(selected_app))
 
     api_path = None
     lib_path = None
@@ -242,7 +321,20 @@ def find_resolve_paths():
             api_path = expanded
             break
 
-    for p in candidates["lib"]:
+    lib_candidates = list(candidates["lib"])
+    if is_mac():
+        lib_candidates = [
+            str(
+                Path(p.replace("{user}", username)).expanduser()
+                / "Contents"
+                / "Libraries"
+                / "Fusion"
+                / "fusionscript.so"
+            )
+            for p in app_candidates
+        ] + lib_candidates
+
+    for p in lib_candidates:
         expanded = p.replace("{user}", username)
         if os.path.isfile(expanded):
             lib_path = expanded
@@ -252,7 +344,7 @@ def find_resolve_paths():
     # scripting library from every detected app bundle so custom installs do
     # not require a separately hard-coded library path.
     if is_mac() and not lib_path:
-        for p in candidates.get("app", []):
+        for p in app_candidates:
             app_path = Path(p.replace("{user}", username)).expanduser()
             if not app_path.is_dir():
                 continue
@@ -495,6 +587,13 @@ def build_server_env(python_path, api_path, lib_path, system=SYSTEM, python_home
 
     if system == "Windows":
         env["PYTHONHOME"] = str(python_home or get_python_base_install(python_path))
+
+    host = os.environ.get("RESOLVE_SCRIPT_HOST")
+    if host:
+        env["RESOLVE_SCRIPT_HOST"] = host
+        timeout = os.environ.get("RESOLVE_SCRIPT_TIMEOUT")
+        if timeout:
+            env["RESOLVE_SCRIPT_TIMEOUT"] = timeout
 
     return env
 
@@ -897,12 +996,21 @@ def verify_resolve_connection(python_path, api_path, lib_path):
 
     env = {**os.environ, **build_server_env(python_path, api_path, lib_path)}
     modules_path = env["PYTHONPATH"]
+    repo_root = str(Path(__file__).resolve().parent)
+    # Route through connect_resolve so Network mode (RESOLVE_SCRIPT_HOST, propagated
+    # into env by build_server_env) uses the explicit IP-targeted overload. Fall
+    # back to Local-mode discovery if the helper cannot be imported.
     test_script = textwrap.dedent(f"""\
         import sys
         sys.path.insert(0, {modules_path!r})
+        sys.path.insert(0, {repo_root!r})
         try:
             import DaVinciResolveScript as dvr
-            resolve = dvr.scriptapp('Resolve')
+            try:
+                from src.utils.resolve_connection import connect_resolve
+            except Exception:
+                connect_resolve = lambda mod: mod.scriptapp('Resolve')
+            resolve = connect_resolve(dvr)
             if resolve:
                 name = resolve.GetProductName()
                 ver = resolve.GetVersionString()
@@ -915,12 +1023,22 @@ def verify_resolve_connection(python_path, api_path, lib_path):
             print(f"ERROR: {{e}}")
     """)
 
+    process_timeout = 10.0
+    configured_timeout = env.get("RESOLVE_SCRIPT_TIMEOUT")
+    if configured_timeout:
+        try:
+            network_timeout = float(configured_timeout)
+            if math.isfinite(network_timeout) and network_timeout > 0:
+                process_timeout = max(process_timeout, network_timeout + 2)
+        except ValueError:
+            pass
+
     try:
         result = subprocess.run(
             [str(python_path), "-c", test_script],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=process_timeout,
             env=env,
         )
         output = result.stdout.strip() or result.stderr.strip()
@@ -1472,6 +1590,7 @@ def main():
               python install.py --clients cursor,claude-desktop
               python install.py --clients manual           Just print the config
               python install.py --no-venv --clients cursor Skip venv, configure Cursor
+              python install.py --resolve-app "/Volumes/Media/Applications/DaVinci Resolve/DaVinci Resolve.app"
               python install.py --dry-run --clients all    Preview without writing
               python install.py --update-policy auto       Enable guarded auto-updates
               python install.py --update-policy never      Disable update checks
@@ -1496,6 +1615,10 @@ def main():
     parser.add_argument(
         "--server", type=str, default=None,
         help="Path to the MCP server script"
+    )
+    parser.add_argument(
+        "--resolve-app", type=str, default=None,
+        help="Full path to DaVinci Resolve.app on macOS (quotes are accepted)"
     )
     parser.add_argument(
         "--update-policy",
@@ -1546,7 +1669,21 @@ def main():
         dry_run=args.dry_run,
     )
 
-    api_path, lib_path = find_resolve_paths()
+    resolve_app_path = None
+    if is_mac():
+        configured_resolve_app = args.resolve_app or os.environ.get("DAVINCI_RESOLVE_APP")
+        if configured_resolve_app:
+            resolve_app_path = resolve_macos_app_path(configured_resolve_app)
+            if not resolve_app_path.is_dir():
+                parser.error(f"DaVinci Resolve application not found: {resolve_app_path}")
+        elif sys.stdin.isatty():
+            resolve_app_path = prompt_for_macos_resolve_app()
+        else:
+            resolve_app_path = DEFAULT_MAC_RESOLVE_APP
+
+        print(f"  Resolve App: {green(resolve_app_path) if resolve_app_path.is_dir() else yellow(resolve_app_path)}")
+
+    api_path, lib_path = find_resolve_paths(resolve_app_path)
 
     if api_path:
         print(f"  API Path:  {green(api_path)}")

@@ -57,14 +57,59 @@ class NormalizeCDLTests(unittest.TestCase):
 
 
 class InstallConfigTests(unittest.TestCase):
-    def test_build_server_entry_includes_env(self):
-        entry = install.build_server_entry(
-            Path("/tmp/python"),
-            Path("/tmp/server.py"),
-            "/Resolve/Scripting",
-            "/Resolve/fusionscript.so",
-            system="Linux",
+    def test_normalize_path_input_accepts_finder_and_shell_quotes(self):
+        expected = Path("/Volumes/Media Drive/DaVinci Resolve.app")
+        self.assertEqual(
+            install.normalize_path_input('"/Volumes/Media Drive/DaVinci Resolve.app"'),
+            expected,
         )
+        self.assertEqual(
+            install.normalize_path_input("\u201c/Volumes/Media Drive/DaVinci Resolve.app\u201d"),
+            expected,
+        )
+        self.assertEqual(
+            install.normalize_path_input(r"/Volumes/Media\ Drive/DaVinci\ Resolve.app"),
+            expected,
+        )
+
+    def test_resolve_macos_app_path_accepts_executable_inside_bundle(self):
+        executable = Path(
+            "/Volumes/Media/DaVinci Resolve.app/Contents/MacOS/Resolve"
+        )
+        self.assertEqual(
+            install.resolve_macos_app_path(executable),
+            Path("/Volumes/Media/DaVinci Resolve.app"),
+        )
+
+    def test_find_resolve_paths_uses_selected_external_app(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = Path(temp_dir) / "DaVinci Resolve.app"
+            library = (
+                app
+                / "Contents"
+                / "Libraries"
+                / "Fusion"
+                / "fusionscript.so"
+            )
+            library.parent.mkdir(parents=True)
+            library.touch()
+
+            with patch.object(install, "SYSTEM", "Darwin"), patch.object(
+                install, "is_mac", return_value=True
+            ), patch.object(install.os.path, "isdir", return_value=False):
+                _, detected_library = install.find_resolve_paths(app)
+
+            self.assertEqual(detected_library, str(library))
+
+    def test_build_server_entry_includes_env(self):
+        with patch.dict(os.environ, {}, clear=True):
+            entry = install.build_server_entry(
+                Path("/tmp/python"),
+                Path("/tmp/server.py"),
+                "/Resolve/Scripting",
+                "/Resolve/fusionscript.so",
+                system="Linux",
+            )
 
         self.assertEqual(entry["command"], "/tmp/python")
         self.assertEqual(entry["args"], ["/tmp/server.py"])
@@ -76,6 +121,66 @@ class InstallConfigTests(unittest.TestCase):
                 "PYTHONPATH": "/Resolve/Scripting/Modules",
             },
         )
+
+    def test_build_server_entry_includes_explicit_network_env(self):
+        with patch.dict(
+            os.environ,
+            {
+                "RESOLVE_SCRIPT_HOST": "resolve.example.test",
+                "RESOLVE_SCRIPT_TIMEOUT": "12.5",
+            },
+            clear=True,
+        ):
+            entry = install.build_server_entry(
+                Path("/tmp/python"),
+                Path("/tmp/server.py"),
+                "/Resolve/Scripting",
+                "/Resolve/fusionscript.so",
+                system="Linux",
+            )
+
+        self.assertEqual(
+            entry["env"],
+            {
+                "RESOLVE_SCRIPT_API": "/Resolve/Scripting",
+                "RESOLVE_SCRIPT_LIB": "/Resolve/fusionscript.so",
+                "RESOLVE_SCRIPT_HOST": "resolve.example.test",
+                "RESOLVE_SCRIPT_TIMEOUT": "12.5",
+                "PYTHONPATH": "/Resolve/Scripting/Modules",
+            },
+        )
+
+    def test_verify_connection_routes_through_connect_resolve(self):
+        """The installer's post-install probe must use connect_resolve so
+        Network mode (RESOLVE_SCRIPT_HOST) uses the IP-targeted overload, and
+        must inject the repo root so that import resolves."""
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["script"] = argv[-1]
+            captured["timeout"] = kwargs.get("timeout")
+            captured["env"] = kwargs.get("env")
+            return SimpleNamespace(stdout="CONNECTED: DaVinci Resolve Studio 20.3", stderr="", returncode=0)
+
+        repo_root = str(Path(install.__file__).resolve().parent)
+        with patch.dict(
+            os.environ,
+            {"RESOLVE_SCRIPT_HOST": "127.0.0.1", "RESOLVE_SCRIPT_TIMEOUT": "12.5"},
+            clear=True,
+        ), patch.object(install.subprocess, "run", side_effect=fake_run):
+            ok, detail = install.verify_resolve_connection(
+                Path("/tmp/python"),
+                "/Resolve/Scripting",
+                "/Resolve/fusionscript.so",
+            )
+
+        self.assertTrue(ok)
+        self.assertIn("connect_resolve", captured["script"])
+        self.assertIn(repo_root, captured["script"])
+        # RESOLVE_SCRIPT_HOST propagated into the probe env by build_server_env.
+        self.assertEqual(captured["env"].get("RESOLVE_SCRIPT_HOST"), "127.0.0.1")
+        # Process timeout accommodates the configured network timeout (12.5 + 2).
+        self.assertGreaterEqual(captured["timeout"], 14.5)
 
     def test_windows_entry_adds_pythonhome(self):
         entry = install.build_server_entry(

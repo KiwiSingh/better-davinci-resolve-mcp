@@ -2,6 +2,125 @@
 
 Release history for the DaVinci Resolve MCP Server. The latest release is summarized in the root README; older entries live here to keep the README focused.
 
+## What's New in v2.66.0
+
+Generalizes the HTTP transcription backend introduced in v2.65.0 into a
+configuration-driven registry, so additional local, network, or cloud-backed
+adapters no longer require MCP source changes. Contributed in PR #97 by
+@double2tea.
+
+### Changed
+
+- **Pluggable HTTP transcription providers** (PR #97, @double2tea) — the
+  MLX-specific router backend is replaced by an ordered registry of HTTP
+  transcription providers registered via
+  `DAVINCI_RESOLVE_MCP_TRANSCRIPTION_HTTP_PROVIDERS` (a JSON array). Each entry
+  requires `id` and `base_url`; optional adapter fields cover `label`, `model`,
+  `health_path`, `transcribe_path`, `health_field`, `health_value`, `headers`,
+  `request_body`, `field_map`, and `response_field`. Configured providers are
+  selected as stable `http:<id>` backend names and preferred in transcription
+  capability ordering. Auth headers are sent on health and transcription
+  requests but kept out of capability reports, and malformed configuration
+  fails fast. Response handling now accepts a transcript object, a JSON-encoded
+  transcript string, or plain text under the configured `response_field`.
+  Audiobox is documented as one adapter example rather than a core requirement.
+
+### Removed
+
+- The `DAVINCI_RESOLVE_MCP_MLX_AUDIO_URL` / `DAVINCI_RESOLVE_MCP_MLX_AUDIO_MODEL`
+  environment variables added in v2.65.0 are superseded by the generic provider
+  registry above. To keep an Audiobox/MLX router, register it as a provider:
+  `[{"id":"audiobox-local","base_url":"http://127.0.0.1:8000","request_body":{"provider":"mlx"}}]`.
+
+### Validation
+
+- `tests/test_media_analysis.py` and the analysis caps/runs/store suites pass
+  (153 on the merged tree); static checks and drift guards pass.
+- No DaVinci Resolve scripting behavior changed: the change is confined to the
+  stdlib HTTP transcription path and is gated behind an env var. Live Resolve
+  validation not required.
+
+## What's New in v2.65.0
+
+Bundles two community contributions from @double2tea: an optional HTTP
+transcription backend and a localized, build-aware control panel. Both are
+opt-in and change no default behavior — with neither configured, existing
+transcription backends and the English panel work exactly as before.
+
+### Added
+
+- **MLX Audio Router transcription backend** (PR #95, @double2tea) — an optional
+  HTTP transcription backend that runs outside the Resolve MCP Python
+  environment. Enabled only when `DAVINCI_RESOLVE_MCP_MLX_AUDIO_URL` is set and a
+  bounded `GET /health` probe succeeds; an optional
+  `DAVINCI_RESOLVE_MCP_MLX_AUDIO_MODEL` overrides the router's default model.
+  When configured and healthy it is preferred in transcription capability
+  ordering, and its response is normalized into the existing JSON/SRT/VTT
+  transcript artifacts. Standard-library only (`urllib`); the MCP server never
+  installs, starts, or downloads anything on the router's behalf, and existing
+  Whisper backends are untouched when no URL is set.
+- **Control panel localization (English / Simplified Chinese)** (PR #96,
+  @double2tea) — a persistent language switch on the local control panel.
+  English remains the authored, canonical UI; the browser stores only the
+  selected locale in `localStorage` and the initial locale follows browser
+  preferences. Translation runs client-side over the DOM (text nodes plus
+  `aria-label`/`title`/`placeholder`) and is fully reversible; no server API or
+  persisted project data changes.
+- **Build-aware AI console** (PR #96, @double2tea) — the Resolve AI console now
+  uses the runtime capability payload to disable actions the connected Resolve
+  build cannot execute, distinguishing "Requires Resolve 21+" from "Unavailable
+  on this build" and surfacing the Resolve 20 transcription methods
+  (`TranscribeAudio` / `ClearTranscription`). Narrow-screen navigation and the
+  mobile footer were also improved.
+
+### Validation
+
+- Static checks and drift guards pass; `tests/test_media_analysis.py` (110),
+  `tests/test_control_panel_i18n.py` + `tests/test_control_panel_ai_capabilities.py`
+  + `tests/test_open_control_panel.py` (14) pass on the merged tree.
+- No DaVinci Resolve scripting behavior changed: PR #95 is a self-contained
+  HTTP/stdlib backend gated behind an env var, and PR #96 changes only the
+  control panel's client-side HTML/JS. Live Resolve validation not required.
+
+## What's New in v2.64.0
+
+Adds opt-in support for DaVinci Resolve's **Network** external-scripting mode
+(PR #91… correction: PR #94, by @double2tea), so the MCP can drive a Resolve
+instance addressed by IP — including a Resolve running on the same machine with
+`External scripting using = Network`. Contributed in PR #94 by @double2tea,
+with two additional connection sites hardened during adoption. Local mode is
+unchanged and remains the default.
+
+### Added
+
+- **Resolve Network scripting mode** — set `RESOLVE_SCRIPT_HOST` to the Resolve
+  host IP (`127.0.0.1` on the same machine) to route connections through
+  Resolve's explicit IP-targeted `scriptapp("Resolve", host, timeout)` overload.
+  `RESOLVE_SCRIPT_TIMEOUT` (positive finite seconds, default 5) bounds the
+  connection wait. When `RESOLVE_SCRIPT_HOST` is absent, the server uses the
+  one-argument Local discovery exactly as before. A shared `connect_resolve`
+  helper centralizes this behavior; the compound server, granular server,
+  analysis dashboard, `scripts/doctor.py`, and the installer's post-install
+  connection probe all route through it. The installer copies
+  `RESOLVE_SCRIPT_HOST`/`RESOLVE_SCRIPT_TIMEOUT` into generated client configs
+  when present in its environment.
+- **`doctor.py` Network flags** — `python3 scripts/doctor.py --resolve-host
+  <ip> [--resolve-timeout <seconds>]` runs the read-only connection check
+  against a Network-mode host.
+
+### Security
+
+- Network scripting permits remote control of Resolve. Documentation (SKILL.md,
+  install.md) advises using Local mode when remote access is unnecessary, and
+  otherwise restricting access with host firewall and network controls.
+
+### Validation
+
+- Live-validated on DaVinci Resolve Studio 19.1.3.7: Local mode (one-argument
+  discovery) and Network mode (`--resolve-host 127.0.0.1 --resolve-timeout 8`)
+  both connect through the shared `connect_resolve` helper. PR author validated
+  against Studio 20.3.2.9 in Network mode. Full offline suite: 1514 tests.
+
 ## What's New in v2.63.2
 
 Installer fix for Windows MSIX builds of Claude Desktop (issue #93, reported by

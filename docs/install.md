@@ -7,7 +7,9 @@ This guide covers Resolve requirements, the universal installer, supported MCP c
 - **DaVinci Resolve Studio** 18.5+ (macOS, Windows, or Linux) — the free edition does not support external scripting
 - **Python 3.10+** (the MCP SDK requires 3.10). **3.10–3.12 is the lowest-risk
   choice**; 3.13/3.14 also work on recent Resolve builds — see below
-- DaVinci Resolve running with **Preferences > General > "External scripting using"** set to **Local**
+- DaVinci Resolve running with **Preferences > General > "External scripting using"**
+  set to **Local**, or **Network** with `RESOLVE_SCRIPT_HOST` set to the Resolve
+  host IP (`127.0.0.1` when Resolve and the MCP run on the same machine)
 
 > **Python 3.13 / 3.14:** these are **allowed** — setup will use them and warn.
 > Python 3.14 is verified working against DaVinci Resolve Studio 20.3.2. On
@@ -41,6 +43,13 @@ python install.py
 ```
 
 The universal installer auto-detects your platform, finds your DaVinci Resolve installation, creates a virtual environment, and configures your MCP client — all in one step.
+
+On macOS, setup asks for the full path to `DaVinci Resolve.app` and defaults to
+`/Applications/DaVinci Resolve/DaVinci Resolve.app`. External-volume installs
+are supported. You may paste Finder's **Copy as Pathname** result directly,
+including surrounding straight or smart quotation marks. For unattended setup,
+pass `--resolve-app "/full/path/to/DaVinci Resolve.app"` or set
+`DAVINCI_RESOLVE_APP`.
 
 The installer and MCP server perform a best-effort update check against the latest GitHub release. The server check runs in the background, is throttled to once every 24 hours, and never installs code automatically. Set `DAVINCI_RESOLVE_MCP_UPDATE_CHECK=0` to disable it, or `DAVINCI_RESOLVE_MCP_UPDATE_INTERVAL_HOURS` to adjust the interval.
 
@@ -85,12 +94,14 @@ Autohand adds npx's `-y` flag automatically. Add `--scope project` after `mcp ad
 
 ```bash
 npx davinci-resolve-mcp setup                 # Interactive npm setup
+npx davinci-resolve-mcp setup --resolve-app "/Volumes/Media/Applications/DaVinci Resolve/DaVinci Resolve.app"
 npx davinci-resolve-mcp setup --clients all   # Configure all clients
 npx davinci-resolve-mcp doctor                # Dry-run environment/config check
 npx davinci-resolve-mcp server                # Launch the managed MCP server
 npx davinci-resolve-mcp control-panel         # Launch the local control panel
 
 python install.py                              # Interactive mode
+python install.py --resolve-app "/Volumes/Media/Applications/DaVinci Resolve/DaVinci Resolve.app"
 python install.py --clients all                # Configure all clients
 python install.py --clients cursor,claude-desktop  # Specific clients
 python install.py --clients manual             # Just print the config
@@ -169,6 +180,26 @@ If you prefer to set things up yourself, add to your MCP client config:
 ```
 
 On Windows, installer-generated configs also include `PYTHONHOME`. That scopes Resolve's Python binding to the selected interpreter and avoids the Resolve 20.3 multi-Python crash reported in [Issue #26](https://github.com/samuelgursky/davinci-resolve-mcp/issues/26).
+
+For Resolve's **Network** scripting mode, add
+`"RESOLVE_SCRIPT_HOST": "127.0.0.1"` to the `env` object above, replacing the
+address when Resolve runs on another host. When this variable is present, the
+server uses Resolve's explicit IP-targeted `scriptapp` call with a bounded
+connection timeout. Set `RESOLVE_SCRIPT_TIMEOUT` to override the default
+five-second timeout with a positive finite number of seconds. The installer
+includes both values in generated client configs when they are present in its
+environment.
+
+Network scripting permits remote control of Resolve. Prefer Local mode when
+remote access is unnecessary; otherwise restrict access with host firewall and
+network controls.
+
+Run the read-only doctor against Network mode explicitly:
+
+```bash
+python3 scripts/doctor.py --resolve-host 127.0.0.1
+python3 scripts/doctor.py --resolve-host resolve.example.test --resolve-timeout 12.5
+```
 
 When the compound server is running, `resolve_control(action="get_version")`
 includes the local MCP version, the last update-check status, and the current

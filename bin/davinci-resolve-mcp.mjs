@@ -58,6 +58,7 @@ Usage:
 Examples:
   npx davinci-resolve-mcp setup
   npx davinci-resolve-mcp setup --clients cursor,claude-desktop
+  npx davinci-resolve-mcp setup --resolve-app "/Volumes/Media/Applications/DaVinci Resolve/DaVinci Resolve.app"
   npx davinci-resolve-mcp doctor
   npx davinci-resolve-mcp batch run /path/to/footage --depth standard
   npx davinci-resolve-mcp batch run /path/to/footage --json > progress.log
@@ -66,6 +67,8 @@ Environment:
   DAVINCI_RESOLVE_MCP_INSTALL_ROOT   Override the managed install directory.
   DAVINCI_RESOLVE_MCP_PYTHON         Python executable to use (3.10+). Set this to
                                      pin a specific interpreter, e.g. python3.12.
+  DAVINCI_RESOLVE_APP                Full path to DaVinci Resolve.app on macOS.
+                                     Finder/shell wrapping quotes are accepted.
   PYTHON                             Fallback Python executable to use.
 `;
 }
@@ -345,11 +348,26 @@ function hasOption(args, name) {
   return args.some((arg) => arg === name || arg.startsWith(`${name}=`));
 }
 
+function installerArgs(args) {
+  const forwarded = [...args];
+  if (
+    process.platform === "darwin" &&
+    process.env.DAVINCI_RESOLVE_APP &&
+    !hasOption(forwarded, "--resolve-app")
+  ) {
+    forwarded.push("--resolve-app", process.env.DAVINCI_RESOLVE_APP);
+  }
+  return forwarded;
+}
+
 function commandSetup(args) {
   const root = syncManagedInstall(installRoot());
   const python = findSupportedPython();
   const installScript = path.join(root, "install.py");
-  const [command, ...commandArgs] = pythonCommandLine(python, [installScript, ...args]);
+  const [command, ...commandArgs] = pythonCommandLine(
+    python,
+    [installScript, ...installerArgs(args)]
+  );
 
   console.log(`DaVinci Resolve MCP managed install: ${root}`);
   console.log(`Python: ${python.executable} (${python.major}.${python.minor}.${python.micro})`);
@@ -359,7 +377,7 @@ function commandSetup(args) {
 function commandDoctor(args) {
   const root = syncManagedInstall(installRoot());
   const python = findSupportedPython();
-  const doctorArgs = [...args];
+  const doctorArgs = installerArgs(args);
   if (!hasOption(doctorArgs, "--dry-run")) {
     doctorArgs.unshift("--dry-run");
   }
