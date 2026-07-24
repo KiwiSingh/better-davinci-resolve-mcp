@@ -235,12 +235,17 @@ Release and validation rules are in [docs/process/release-process.md](docs/proce
 
 MIT
 
-## Author
+## Original author
 
 Samuel Gursky (samgursky@gmail.com)
 - GitHub: [github.com/samuelgursky](https://github.com/samuelgursky)
+
+## Forked and modified by
+Kiwi Singh (kiwisingh@proton.me)
+- GitHub: [github.com/KiwiSingh](https://github.com/KiwiSingh)
 
 ## Acknowledgments
 
 - Blackmagic Design for DaVinci Resolve and its scripting API
 - The Model Context Protocol team for enabling AI assistant integration
+- Samuel Gursky, for their amazing work on the original [davinci-resolve-mcp](https://github.com/samuelgursky/davinci-resolve-mcp)
