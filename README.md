@@ -27,8 +27,8 @@ Before connecting, open DaVinci Resolve Studio and set **Preferences > General >
 For source installs:
 
 ```bash
-git clone https://github.com/samuelgursky/davinci-resolve-mcp.git
-cd davinci-resolve-mcp
+git clone https://github.com/KiwiSingh/better-davinci-resolve-mcp.git
+cd better-davinci-resolve-mcp
 python install.py
 ```
 
