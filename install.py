@@ -4,7 +4,7 @@ DaVinci Resolve MCP Server — Universal Installer
 
 Supports: macOS, Windows, Linux
 Configures: Claude Desktop, Claude Code, Cursor, VS Code (Copilot),
-            Windsurf, Cline, Roo Code, Zed, Continue, OpenCode, and manual setup.
+            Windsurf, Cline, Roo Code, Zed, Continue, OpenCode, Codex, and manual setup.
 
 Usage:
     python install.py                  # Interactive mode
@@ -192,9 +192,11 @@ RESOLVE_PATHS = {
         ],
         "lib": [
             "/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so",
+            "/Volumes/Zweidrive/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so",
         ],
         "app": [
             "/Applications/DaVinci Resolve/DaVinci Resolve.app",
+            "/Volumes/Zweidrive/Applications/DaVinci Resolve/DaVinci Resolve.app",
         ],
     },
     "Windows": {
@@ -245,6 +247,19 @@ def find_resolve_paths():
         if os.path.isfile(expanded):
             lib_path = expanded
             break
+
+    # On macOS, Resolve may be installed on an external volume. Derive the
+    # scripting library from every detected app bundle so custom installs do
+    # not require a separately hard-coded library path.
+    if is_mac() and not lib_path:
+        for p in candidates.get("app", []):
+            app_path = Path(p.replace("{user}", username)).expanduser()
+            if not app_path.is_dir():
+                continue
+            bundled_lib = app_path / "Contents" / "Libraries" / "Fusion" / "fusionscript.so"
+            if bundled_lib.is_file():
+                lib_path = str(bundled_lib)
+                break
 
     return api_path, lib_path
 
@@ -432,6 +447,13 @@ MCP_CLIENTS = [
         "get_path": lambda: home() / ".config" / "opencode" / "opencode.json",
         "config_key": "mcp",
         "notes": "AI coding agent (uses its own type/enabled/command-array format)",
+    },
+    {
+        "id": "codex",
+        "name": "OpenAI Codex",
+        "get_path": lambda: home() / ".codex" / "config.toml",
+        "config_key": None,
+        "notes": "Codex app, CLI, and IDE extension (shared TOML config)",
     },
 ]
 
@@ -660,11 +682,76 @@ def write_json(path, data):
         f.write("\n")
 
 
+def _toml_string(value):
+    """Encode a scalar as a basic TOML string."""
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def build_codex_toml_entry(python_path, server_path, api_path, lib_path):
+    """Build Codex's native config.toml block for this stdio MCP server."""
+    env = build_server_env(python_path, api_path, lib_path)
+    lines = [
+        "[mcp_servers.davinci-resolve]",
+        f"command = {_toml_string(python_path)}",
+        f"args = [{_toml_string(server_path)}]",
+        "enabled = true",
+        "",
+        "[mcp_servers.davinci-resolve.env]",
+    ]
+    lines.extend(f"{key} = {_toml_string(value)}" for key, value in env.items())
+    return "\n".join(lines) + "\n"
+
+
+def _remove_codex_server_blocks(text, server_name="davinci-resolve"):
+    """Remove existing TOML tables for one Codex MCP server, preserving others."""
+    prefix = f"mcp_servers.{server_name}"
+    lines = text.splitlines(keepends=True)
+    out = []
+    skipping = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            table = stripped[1:-1].strip()
+            skipping = table == prefix or table.startswith(prefix + ".")
+        if not skipping:
+            out.append(line)
+    return "".join(out).rstrip()
+
+
+def write_codex_config(config_path, python_path, server_path, api_path, lib_path, dry_run=False):
+    """Merge the Resolve MCP server into Codex's shared TOML config."""
+    config_path = Path(config_path)
+    block = build_codex_toml_entry(python_path, server_path, api_path, lib_path)
+    existing = ""
+    if config_path.exists():
+        try:
+            existing = config_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return False, f"Could not read {config_path}: {exc}"
+
+    merged_base = _remove_codex_server_blocks(existing)
+    merged = (merged_base + "\n\n" if merged_base else "") + block
+
+    if dry_run:
+        return True, f"Would write to {config_path}:\n{merged}"
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    if config_path.exists():
+        shutil.copy2(config_path, config_path.with_suffix(config_path.suffix + ".backup"))
+    config_path.write_text(merged, encoding="utf-8")
+    return True, str(config_path)
+
+
 def write_client_config(client, python_path, server_path, api_path, lib_path, dry_run=False):
     """Write or merge MCP config for a specific client. Returns (success, message)."""
     config_path = client["get_path"]()
     if config_path is None:
         return False, f"{client['name']} is not available on {platform_name()}"
+
+    if client["id"] == "codex":
+        return write_codex_config(
+            config_path, python_path, server_path, api_path, lib_path, dry_run=dry_run
+        )
 
     config_key = client["config_key"]
 

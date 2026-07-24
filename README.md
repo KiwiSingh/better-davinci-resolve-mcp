@@ -22,7 +22,7 @@ A local browser control panel ships with the server for inspecting Resolve state
 npx davinci-resolve-mcp setup
 ```
 
-Before connecting, open DaVinci Resolve Studio and set **Preferences > General > External scripting using** to **Local**. The npm launcher installs a managed copy under your user application-data directory, then runs the universal Python installer. The installer creates a virtual environment, detects Resolve paths, and can configure Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, Zed, Continue, Cline, Roo Code, OpenCode, and JetBrains IDEs.
+Before connecting, open DaVinci Resolve Studio and set **Preferences > General > External scripting using** to **Local**. The npm launcher installs a managed copy under your user application-data directory, then runs the universal Python installer. The installer creates a virtual environment, detects Resolve paths, and can configure ChatGPT Codex (desktop app, CLI, and IDE extension), Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, Zed, Continue, Cline, Roo Code, OpenCode, and JetBrains IDEs.
 
 For source installs:
 
@@ -31,6 +31,14 @@ git clone https://github.com/samuelgursky/davinci-resolve-mcp.git
 cd davinci-resolve-mcp
 python install.py
 ```
+
+### ChatGPT Codex support
+
+This fork supports ChatGPT Codex. From a source checkout, run `python install.py`
+and select **OpenAI Codex** when prompted. The installer configures the shared
+Codex MCP entry in `~/.codex/config.toml` for the Codex desktop app, CLI, and IDE
+extension. Restart Codex after installation so it loads the new Resolve MCP
+server.
 
 For platform paths, client-specific config, and manual setup, see [Installation and Configuration](docs/install.md).
 
